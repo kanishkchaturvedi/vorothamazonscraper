@@ -6,3 +6,4 @@ jsonschema  # If not already installed, used by crawl4ai for JSON schema
 requests # If crawl4ai makes HTTP requests internally (check dependencies)
 selenium # If using the selenium webdriver (depends on crawl4ai config)
 chromium # Ensure compatibility for chromium browser used in crawl4ai
+playwright install

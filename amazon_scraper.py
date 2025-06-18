@@ -228,6 +228,11 @@ def classify_products(main_products, competitor_products, model_number, brand_na
         if len(competitors) == 5:
             break
 
+    # Fallback: If main product was not found, search using Perplexity
+    if main_product is None:
+        print(f"Main product not found in search results. Searching with Perplexity for: {brand_name} {model_number}")
+        main_product = search_product_with_perplexity(brand_name, model_number, product_category, factor)
+
     return main_product, competitors
 
 def check_product_type_match(title: str, main_product_title: str) -> bool:
@@ -270,3 +275,182 @@ def check_product_type_match(title: str, main_product_title: str) -> bool:
     except Exception as e:
         print(f"Error during Gemini type matching: {e}")
         return False
+
+def search_product_with_perplexity(brand_name, model_number, product_category, factor):
+    """
+    Search for product information using Perplexity when the product is not found in Amazon search results.
+    Returns product information in the same format as the scraper.
+    """
+    FACTOR_LABELS = {
+        "Home Audio": "",
+        "Television": "inch",
+        "Mobiles & Tablets": "RAM and Storage",
+        "Fans": "MM",
+        "Coolers": "L",
+        "Mixer Grinders": "Watt",
+        "Water Purifiers": "L",
+        "Vacuum Cleaners": "Watts",
+        "Air Fryers": "Watts",
+        "Geysers": "L",
+        "Irons": "Watt",
+        "Kettles": "L",
+        "Sandwich Makers": "Watt",
+        "Dishwashers": "L",
+        "Air Conditioners": "Tonnage",
+        "Microwave Ovens": "L",
+        "Refrigerators": "L",
+        "Washing Machine": "Kg",
+        "Chimneys": "m3/hr",
+    }
+
+    factor_with_unit = format_factor(product_category, factor, FACTOR_LABELS)
+
+    print(f"{brand_name} {model_number} {factor_with_unit} {product_category}")
+    
+    prompt = (
+        f"Search the web for the current price, ratings and reviews for {brand_name} {model_number} {factor_with_unit} {product_category}. "
+        f"Find the actual current information and return it in this exact JSON format:\n"
+        f"{{\n"
+        f"  \"reviews_count\": \"[actual number of reviews]\",\n"
+        f"  \"rating\": \"[actual rating out of 5 stars]\",\n"
+        f"  \"price\": \"[actual current price in INR]\"\n"
+        f"}}\n\n"
+        f"Important: Search for the real current data, not example data. If not found, return null for all fields."
+    )
+
+    try:
+        # Perplexity API endpoint
+        url = "https://api.perplexity.ai/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {os.getenv('PERPLEXITY_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "llama-3.1-sonar-small-128k-online",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": 150
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        
+        result_text = response.json()["choices"][0]["message"]["content"].strip()
+        
+        print(f"Perplexity raw response: {result_text}")
+        
+        # Handle responses wrapped in markdown code blocks
+        if result_text.startswith('```json'):
+            # Remove the markdown code block wrapper
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
+        elif result_text.startswith('```'):
+            # Remove generic markdown code block wrapper
+            result_text = result_text.replace('```', '').strip()
+        
+        # Try to extract JSON from the response - look for the first complete JSON object
+        json_start = result_text.find('{')
+        json_end = result_text.rfind('}')
+        
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            # Extract just the JSON part
+            json_text = result_text[json_start:json_end + 1]
+            try:
+                product_data = json.loads(json_text)
+                
+                # Construct the complete product data with title and URL
+                complete_product_data = {
+                    "title": f"{brand_name} {model_number}",
+                    "price": product_data.get('price') or "",
+                    "rating": normalize_rating_format(product_data.get('rating') or ""),
+                    "reviews_count": product_data.get('reviews_count') or "",
+                    "url": ""  # Keep URL blank as requested
+                }
+                
+                # Convert "null" strings to blank strings
+                for key in ['price', 'rating', 'reviews_count']:
+                    if complete_product_data[key] == "null":
+                        complete_product_data[key] = ""
+                
+                # Check if we got any meaningful data (not all null/empty)
+                has_data = any(product_data.get(field) and product_data.get(field) != "null" for field in ['price', 'rating', 'reviews_count'])
+                
+                if has_data:
+                    print(f"Found product via Perplexity: {complete_product_data.get('title', 'Unknown')}")
+                    return complete_product_data
+                else:
+                    print("No product data found via Perplexity")
+                    return None
+            except json.JSONDecodeError as e:
+                print(f"Error parsing extracted JSON: {e}")
+                return None
+        else:
+            print("No valid JSON object found in Perplexity response")
+            return None
+            
+    except json.JSONDecodeError as e:
+        print(f"Error parsing Perplexity JSON response: {e}")
+        return None
+    except Exception as e:
+        print(f"Error during Perplexity product search: {e}")
+        return None
+
+def normalize_rating_format(rating):
+    """
+    Normalize rating format to 'xx out of 5 stars' format.
+    Handles various input formats like '4.5/5', '4.5/5 stars', '4.5 out of 5', etc.
+    Returns blank if the rating is descriptive text instead of a number.
+    """
+    if not rating:
+        return ""
+    
+    rating = str(rating).strip()
+    
+    # If rating contains descriptive text instead of numbers, return blank
+    descriptive_phrases = [
+        "not explicitly provided",
+        "not available",
+        "not found",
+        "generally rated well",
+        "based on the context",
+        "no rating",
+        "unavailable"
+    ]
+    
+    rating_lower = rating.lower()
+    for phrase in descriptive_phrases:
+        if phrase in rating_lower:
+            return ""
+    
+    # Handle "xx/5 stars" format
+    if "/5" in rating:
+        # Extract the number before "/5"
+        parts = rating.split("/5")
+        if parts and parts[0]:
+            try:
+                rating_value = parts[0].strip()
+                return f"{rating_value} out of 5 stars"
+            except:
+                pass
+    
+    # Handle "xx out of 5" format (already correct)
+    if "out of 5" in rating:
+        if "stars" not in rating:
+            return f"{rating} stars"
+        return rating
+    
+    # Handle just numbers (assume out of 5)
+    try:
+        rating_value = float(rating)
+        if 0 <= rating_value <= 5:
+            return f"{rating_value} out of 5 stars"
+    except:
+        pass
+    
+    # If no pattern matches and it's not a number, return blank
+    return ""

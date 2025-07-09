@@ -319,16 +319,22 @@ def search_product_with_perplexity(brand_name, model_number, product_category, f
     )
 
     try:
+        # Check if API key is set
+        perplexity_api_key = os.getenv('PERPLEXITY_API_KEY')
+        if not perplexity_api_key:
+            print("Error: PERPLEXITY_API_KEY environment variable is not set")
+            return None
+        
         # Perplexity API endpoint
         url = "https://api.perplexity.ai/chat/completions"
         
         headers = {
-            "Authorization": f"Bearer {os.getenv('PERPLEXITY_API_KEY')}",
+            "Authorization": f"Bearer {perplexity_api_key}",
             "Content-Type": "application/json"
         }
         
         data = {
-            "model": "llama-3.1-sonar-small-128k-online",
+            "model": "sonar",
             "messages": [
                 {
                     "role": "user",
@@ -338,8 +344,21 @@ def search_product_with_perplexity(brand_name, model_number, product_category, f
             "max_tokens": 150
         }
         
+        print(f"Making Perplexity API request with model: {data['model']}")
         response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        
+        # Better error handling for API responses
+        if response.status_code == 400:
+            print(f"Perplexity API 400 Error: {response.text}")
+            return None
+        elif response.status_code == 401:
+            print("Perplexity API 401 Error: Invalid API key")
+            return None
+        elif response.status_code == 429:
+            print("Perplexity API 429 Error: Rate limit exceeded")
+            return None
+        
+        response.raise_for_status()  # Raise an exception for other bad status codes
         
         result_text = response.json()["choices"][0]["message"]["content"].strip()
         

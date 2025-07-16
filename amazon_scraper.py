@@ -376,7 +376,7 @@ def check_product_type_match(title: str, main_product_title: str) -> bool:
         print(f"Error during Gemini type matching: {e}")
         return False
 
-async def search_google_for_amazon_product(brand_name, model_number, product_category, factor):
+async def search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor):
     """
     Search Google for Amazon results and extract product information from search snippets.
     Returns product information in the same format as the scraper.
@@ -573,6 +573,382 @@ async def search_google_for_amazon_product(brand_name, model_number, product_cat
     except Exception as e:
         print(f"Error during Google search: {e}")
         return None
+
+async def search_google_for_amazon_product(brand_name, model_number, product_category, factor):
+    """
+    Search Google using Serp API for Amazon results and extract product information.
+    Returns product information in the same format as the scraper.
+    """
+    from serpapi import GoogleSearch
+    import re
+    
+    try:
+        # Check if Serp API key is set
+        serp_api_key = os.getenv('SERP_API_KEY')
+        if not serp_api_key:
+            print("Warning: SERP_API_KEY environment variable not set, falling back to Crawl4AI")
+            return await search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor)
+        
+        # Construct search query
+        search_query = f"{brand_name} {model_number}"
+        
+        # Setup Serp API parameters
+        params = {
+            "q": search_query,
+            "engine": "google",
+            "api_key": serp_api_key,
+            "location": "India",
+            "hl": "en",
+            "gl": "in",
+            "num": 10
+        }
+        
+        print(f"Searching Google via Serp API for: {search_query}")
+        
+        # Make the search request
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        
+        if "error" in results:
+            print(f"Serp API error: {results['error']}")
+            return None
+        
+        organic_results = results.get("organic_results", [])
+        shopping_results = results.get("shopping_results", [])
+        
+        print(f"Found {len(organic_results)} organic results and {len(shopping_results)} shopping results")
+        
+        # Debug: Print detailed results
+        print("\n=== DEBUG: SERP API Response ===")
+        for i, result in enumerate(organic_results[:5]):  # Show first 5 results
+            title = result.get('title', 'N/A')
+            link = result.get('link', 'N/A')
+            source = result.get('source', 'N/A')
+            
+            print(f"\nResult {i+1}:")
+            print(f"  Title: {title}")
+            print(f"  Link: {link}")
+            print(f"  Source: {source}")
+            
+            # Check for rich snippet data
+            if 'rich_snippet' in result:
+                rich_snippet = result['rich_snippet']
+                if 'bottom' in rich_snippet and 'detected_extensions' in rich_snippet['bottom']:
+                    detected_extensions = rich_snippet['bottom']['detected_extensions']
+                    print(f"  Rich Snippet Extensions: {detected_extensions}")
+            
+            # Check if model number is in title/link
+            model_in_title = model_number.upper() in title.upper()
+            model_in_link = model_number.upper() in link.upper()
+            is_amazon = (source == "Amazon.in" or 'amazon.in' in link or 'amazon.com' in link)
+            
+            print(f"  Model in title: {model_in_title}")
+            print(f"  Model in link: {model_in_link}")
+            print(f"  Is Amazon: {is_amazon}")
+        
+        if shopping_results:
+            print(f"\n=== Shopping Results ===")
+            for i, result in enumerate(shopping_results[:3]):  # Show first 3 shopping results
+                title = result.get('title', 'N/A')
+                source = result.get('source', 'N/A')
+                price = result.get('price', 'N/A')
+                print(f"Shopping {i+1}: {title} | {source} | {price}")
+        
+        print("=== END DEBUG ===\n")
+        
+        # First, look for Amazon results in organic results
+        amazon_result = None
+        best_price = ""
+        best_rating = ""
+        best_reviews = ""
+        
+        for result in organic_results:
+            link = result.get('link', '')
+            title = result.get('title', '')
+            snippet = result.get('snippet', '')
+            source = result.get('source', '')
+            
+            # Check if this is an Amazon result (prioritize source field)
+            is_amazon_result = (source == "Amazon.in" or 
+                              'amazon.in' in link or 
+                              'amazon.com' in link)
+            
+            
+            if is_amazon_result:
+                print(f"Found Amazon result: {title}")
+                amazon_result = result
+                
+                # Extract data from rich snippet's detected_extensions
+                price = ""
+                rating = ""
+                reviews = ""
+                
+                if 'rich_snippet' in result:
+                    rich_snippet = result['rich_snippet']
+                    if 'bottom' in rich_snippet and 'detected_extensions' in rich_snippet['bottom']:
+                        detected_extensions = rich_snippet['bottom']['detected_extensions']
+                        
+                        # Extract price
+                        if 'price' in detected_extensions and 'currency' in detected_extensions:
+                            price_value = detected_extensions['price']
+                            currency = detected_extensions['currency']
+                            # Format as integer if it's a whole number
+                            if isinstance(price_value, float) and price_value.is_integer():
+                                price = f"{currency}{int(price_value):,}"
+                            else:
+                                price = f"{currency}{price_value:,}"
+                        
+                        # Extract rating
+                        if 'rating' in detected_extensions:
+                            rating_value = detected_extensions['rating']
+                            rating = f"{rating_value} out of 5 stars"
+                        
+                        # Extract reviews
+                        if 'reviews' in detected_extensions:
+                            reviews = str(detected_extensions['reviews'])
+                    
+                    # Also check extensions array for fallback
+                    if 'bottom' in rich_snippet and 'extensions' in rich_snippet['bottom']:
+                        extensions = rich_snippet['bottom']['extensions']
+                        for extension in extensions:
+                            # Look for price pattern
+                            if not price and ('₹' in extension or 'INR' in extension or 'Rs' in extension):
+                                if not any(word in extension.lower() for word in ['stock', 'स्टॉक', 'out of stock']):
+                                    price = extension
+                            
+                            # Look for rating/review pattern like "4.6(342)"
+                            if not rating and not reviews:
+                                rating_review_match = re.search(r'(\d+\.?\d*)\((\d+(?:,\d+)*)\)', extension)
+                                if rating_review_match:
+                                    rating_value = float(rating_review_match.group(1))
+                                    rating = f"{rating_value} out of 5 stars"
+                                    reviews = rating_review_match.group(2)
+                
+                # If no price in rich snippet, try extracting from snippet text
+                if not price and snippet:
+                    price = extract_price_from_snippet(snippet)
+                
+                best_price = price
+                best_rating = rating
+                best_reviews = reviews
+                break
+        
+        # If no Amazon result or price found in organic results, check shopping results
+        if not amazon_result or not best_price:
+            for result in shopping_results:
+                title = result.get('title', '')
+                source = result.get('source', '')
+                price = result.get('price', '')
+                
+                has_model_shopping = (model_number.upper() in title.upper() or 
+                                     model_number.upper() in result.get('link', '').upper())
+                is_amazon_shopping = ('amazon' in source.lower() or 'amazon' in result.get('link', '').lower())
+                
+                if has_model_shopping and is_amazon_shopping:
+                    
+                    if not amazon_result:
+                        amazon_result = result
+                        
+                        # Extract rating and reviews from shopping result if available
+                        if 'rich_snippet' in result:
+                            rich_snippet = result['rich_snippet']
+                            if 'bottom' in rich_snippet and 'detected_extensions' in rich_snippet['bottom']:
+                                detected_extensions = rich_snippet['bottom']['detected_extensions']
+                                
+                                # Extract rating
+                                if 'rating' in detected_extensions and not best_rating:
+                                    rating_value = detected_extensions['rating']
+                                    best_rating = f"{rating_value} out of 5 stars"
+                                
+                                # Extract reviews
+                                if 'reviews' in detected_extensions and not best_reviews:
+                                    best_reviews = str(detected_extensions['reviews'])
+                    
+                    if price and not best_price:
+                        best_price = price
+                        print(f"Found price in shopping results: {price}")
+                    
+                    break
+        
+        # If still no price, look for price in other results for the same model
+        if amazon_result and not best_price:
+            print("Looking for price in other results for the same model...")
+            
+            # First priority: Look for Amazon results with the model number
+            for result in organic_results:
+                title = result.get('title', '')
+                snippet = result.get('snippet', '')
+                link = result.get('link', '')
+                source = result.get('source', '')
+                
+                # Check if this is an Amazon result with the model number
+                is_amazon = (source == "Amazon.in" or 'amazon.in' in link or 'amazon.com' in link)
+                
+                if is_amazon:
+                    # First check rich snippet for price
+                    price = ""
+                    if 'rich_snippet' in result:
+                        rich_snippet = result['rich_snippet']
+                        if 'bottom' in rich_snippet and 'detected_extensions' in rich_snippet['bottom']:
+                            detected_extensions = rich_snippet['bottom']['detected_extensions']
+                            if 'price' in detected_extensions and 'currency' in detected_extensions:
+                                price_value = detected_extensions['price']
+                                currency = detected_extensions['currency']
+                                price = f"{currency}{price_value:,}"
+                    
+                    # If no price in rich snippet, try snippet text
+                    if not price:
+                        price = extract_price_from_snippet(snippet)
+                    
+                    if price:
+                        best_price = price
+                        print(f"Found price in Amazon result with model number: {price}")
+                        break
+            
+            # Second priority: If no Amazon result found, collect all prices and find the lowest
+            if not best_price:
+                all_prices = []
+                
+                for result in organic_results:
+                    title = result.get('title', '')
+                    snippet = result.get('snippet', '')
+                    link = result.get('link', '')
+                    source = result.get('source', '')
+                    
+                    # Consider results that have the model number in title, link, or snippet
+                    has_model_in_result = (model_number.upper() in title.upper() or 
+                                         model_number.upper() in link.upper() or 
+                                         model_number.upper() in snippet.upper())
+                    
+                    if has_model_in_result:
+                        # Skip if it's already the Amazon result we found (avoid duplicates)
+                        if result == amazon_result:
+                            continue
+                        
+                        # Prefer shopping/e-commerce sites for pricing
+                        is_shopping_site = any(domain in link.lower() for domain in [
+                            'amazon', 'flipkart', 'jiomart', 'snapdeal', 'myntra', 'ajio', 
+                            'tatacliq', 'reliancedigital', 'croma', 'vijaysales'
+                        ])
+                        
+                        if is_shopping_site:
+                            # First check rich snippet for price
+                            price = ""
+                            price_value = 0
+                            
+                            if 'rich_snippet' in result:
+                                rich_snippet = result['rich_snippet']
+                                if 'bottom' in rich_snippet and 'detected_extensions' in rich_snippet['bottom']:
+                                    detected_extensions = rich_snippet['bottom']['detected_extensions']
+                                    if 'price' in detected_extensions and 'currency' in detected_extensions:
+                                        price_value = detected_extensions['price']
+                                        currency = detected_extensions['currency']
+                                        # Format as integer if it's a whole number
+                                        if isinstance(price_value, float) and price_value.is_integer():
+                                            price = f"{currency}{int(price_value):,}"
+                                        else:
+                                            price = f"{currency}{price_value:,}"
+                            
+                            # If no price in rich snippet, try snippet text
+                            if not price:
+                                price = extract_price_from_snippet(snippet)
+                                if price:
+                                    # Extract numerical value for comparison
+                                    price_match = re.search(r'[\d,]+', price.replace('₹', '').replace(',', ''))
+                                    if price_match:
+                                        try:
+                                            price_value = float(price_match.group().replace(',', ''))
+                                        except ValueError:
+                                            continue
+                            
+                            if price and price_value > 0:
+                                all_prices.append({
+                                    'price': price,
+                                    'price_value': price_value,
+                                    'source': source or link,
+                                    'title': title
+                                })
+                                print(f"Found price: {price} from {source or link}")
+                
+                # Select the lowest price
+                if all_prices:
+                    lowest_price_info = min(all_prices, key=lambda x: x['price_value'])
+                    best_price = lowest_price_info['price']
+                    print(f"Selected lowest price: {best_price} from {lowest_price_info['source']}")
+                    print(f"All prices found: {[p['price'] for p in all_prices]}")
+        
+        # Final fallback: If still no price found, try Perplexity
+        if amazon_result and not best_price:
+            print("No price found in SERP API results. Falling back to Perplexity...")
+            try:
+                perplexity_result = search_product_with_perplexity(brand_name, model_number, product_category, factor)
+                if perplexity_result and perplexity_result.get('price'):
+                    best_price = perplexity_result['price']
+                    print(f"Found price via Perplexity: {best_price}")
+                else:
+                    print("Perplexity also failed to find price")
+            except Exception as e:
+                print(f"Error getting price from Perplexity: {e}")
+        
+        if amazon_result:
+            # Use the extracted rating and reviews, fallback to snippet extraction if needed
+            rating = best_rating
+            review_count = best_reviews
+            
+            # If we didn't get rating/reviews from rich snippet, try extracting from snippet
+            if not rating or not review_count:
+                snippet = amazon_result.get('snippet', '')
+                if snippet:
+                    # Look for rating patterns like "4.4 out of 5 stars" or "4.4/5"
+                    if not rating:
+                        rating_patterns = [
+                            r'(\d+\.?\d*)\s*out of\s*5\s*stars',
+                            r'(\d+\.?\d*)/5',
+                            r'(\d+\.?\d*)\s*stars',
+                            r'Rating:\s*(\d+\.?\d*)',
+                            r'(\d+\.?\d*)\s*★'
+                        ]
+                        
+                        for pattern in rating_patterns:
+                            match = re.search(pattern, snippet, re.IGNORECASE)
+                            if match:
+                                rating_value = float(match.group(1))
+                                rating = f"{rating_value} out of 5 stars"
+                                break
+                    
+                    # Look for review count patterns
+                    if not review_count:
+                        review_patterns = [
+                            r'\((\d+(?:,\d+)*)\)\s*reviews?',
+                            r'(\d+(?:,\d+)*)\s*reviews?',
+                            r'(\d+(?:,\d+)*)\s*customer reviews?'
+                        ]
+                        
+                        for pattern in review_patterns:
+                            match = re.search(pattern, snippet, re.IGNORECASE)
+                            if match:
+                                review_count = match.group(1)
+                                break
+            
+            # Create product data
+            product_data = {
+                "title": amazon_result.get('title', ''),
+                "price": normalize_price_format(best_price),
+                "rating": rating,
+                "reviews_count": review_count,
+                "url": amazon_result.get('link', '')
+            }
+            
+            print(f"Extracted from Serp API: Price={best_price}, Rating={rating}, Reviews={review_count}")
+            return product_data
+        
+        print("No Amazon results found in Serp API search")
+        return None
+        
+    except Exception as e:
+        print(f"Error during Serp API search: {e}")
+        # Fallback to Crawl4AI if Serp API fails
+        return await search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor)
 
 def search_product_with_perplexity(brand_name, model_number, product_category, factor):
     """

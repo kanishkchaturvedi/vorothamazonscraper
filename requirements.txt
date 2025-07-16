@@ -9,3 +9,4 @@ chromium # Ensure compatibility for chromium browser used in crawl4ai
 python-dotenv==1.0.0
 google-generativeai>=0.3.0
 beautifulsoup4
+google-search-results

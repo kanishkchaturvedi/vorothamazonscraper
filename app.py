@@ -17,6 +17,11 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Docker container monitoring"""
+    return {"status": "healthy", "service": "amazon_scraper"}
+
 
 @app.get("/search")
 async def search(

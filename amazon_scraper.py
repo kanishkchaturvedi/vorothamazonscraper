@@ -10,9 +10,97 @@ import random
 import string
 import requests
 import uuid
+import re
+from bs4 import BeautifulSoup
 
 def generate_session_id():
     return f"SESSION_{uuid.uuid4().hex[:8].upper()}"
+
+def extract_price_from_snippet(snippet):
+    """
+    Extract price information from Google search result snippet text.
+    Handles various price formats like ₹23,490.00, ₹23490, etc.
+    """
+    if not snippet:
+        return ""
+    
+    # Pattern to match Indian Rupee prices
+    # Matches: ₹23,490.00, ₹23490, ₹23,490, etc.
+    price_patterns = [
+        r'₹\s*[\d,]+\.?\d*',  # ₹23,490.00 or ₹23490
+        r'Rs\.?\s+[\d,]+\.?\d*',  # Rs. 23,490.00 or Rs 23490 (requires space after Rs)
+        r'INR\s+[\d,]+\.?\d*',  # INR 23,490.00 (requires space)
+        r'\b[\d,]+\.?\d*\s*(?:rupees?|INR)\b',  # 23,490 rupees or 23490 INR
+        r'\b[\d]{3,}(?:,\d{3})*(?:\.\d{2})?\b',  # Plain numbers like 7,399 or 11,088 (3+ digits)
+    ]
+    
+    for pattern in price_patterns:
+        matches = re.findall(pattern, snippet, re.IGNORECASE)
+        if matches:
+            for match in matches:
+                price = match.strip()
+                
+                # Skip if it's part of resolution (like 1366x768) or technical specs
+                if 'x' in price or 'hz' in price.lower() or 'degree' in price.lower():
+                    continue
+                
+                # Check context around the number for resolution or technical specs
+                # Find the position of this price in the original snippet
+                price_index = snippet.lower().find(price.lower())
+                if price_index != -1:
+                    # Check surrounding context (10 characters before and after)
+                    context_start = max(0, price_index - 10)
+                    context_end = min(len(snippet), price_index + len(price) + 10)
+                    context = snippet[context_start:context_end].lower()
+                    
+                    # Skip if it's part of resolution, technical specs, or model numbers
+                    if any(keyword in context for keyword in ['x', 'hz', 'degree', 'pixel', 'resolution', 'refresh', 'display', 'model']):
+                        continue
+                
+                # For plain numbers, ensure they're likely prices (reasonable price range)
+                if price.replace(',', '').replace('.', '').isdigit():
+                    price_value = float(price.replace(',', ''))
+                    # Skip if too small (like 60 hertz) or too large (like 1366 resolution)
+                    # Indian TV prices typically range from 5000 to 200000
+                    if price_value < 1000 or price_value > 200000:
+                        continue
+                
+                # Clean up the price (remove extra spaces, etc.)
+                price = re.sub(r'\s+', ' ', price)
+                return price
+    
+    return ""
+
+def extract_price_from_html(html_content):
+    """
+    Extract price information from raw HTML content by finding spans with rupee symbols.
+    This navigates through the div structure to find price spans.
+    """
+    if not html_content:
+        return ""
+    
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Look for spans containing rupee symbols
+        price_patterns = [r'₹[\d,]+\.?\d*', r'Rs\.?\s*[\d,]+\.?\d*', r'INR\s*[\d,]+\.?\d*']
+        
+        # Find all spans
+        spans = soup.find_all('span')
+        
+        for span in spans:
+            text = span.get_text(strip=True)
+            for pattern in price_patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                if matches:
+                    price = matches[0].strip()
+                    # Verify this looks like a valid price (not just a random rupee symbol)
+                    if len(price) > 2 and any(c.isdigit() for c in price):
+                        return price
+        
+        return ""
+    except Exception as e:
+        return ""
 
 def rotate_session(api_key, session_id, product_type):
     url = "https://api.evomi.com/public/rotate_session"
@@ -104,13 +192,13 @@ async def extract_amazon_products(product_category, model_number, brand, factor)
     }
 
     proxy_config_evomi = ProxyConfig(
-        server="http://premium-residential.evomi.com:1000",
+        server="http://core-residential.evomi.com:1000",
         username="kanishkcha5",
         password="vdYFqTHTs8nCeYHqLEKY",
     )
 
     session_id = generate_session_id()
-    rotate_session(api_key, session_id, "rpc")
+    rotate_session(Evomi_api_key, session_id, "rpc")
 
     browswer_config = BrowserConfig(proxy_config=proxy_config_evomi)
 
@@ -157,7 +245,7 @@ async def extract_amazon_products(product_category, model_number, brand, factor)
 
 
 
-def classify_products(main_products, competitor_products, model_number, brand_name, product_category=None, factor=None):
+async def classify_products(main_products, competitor_products, model_number, brand_name, product_category=None, factor=None):
     main_product = None
     competitors = []
 
@@ -191,15 +279,29 @@ def classify_products(main_products, competitor_products, model_number, brand_na
     unit = FACTOR_LABELS.get(product_category, "")
     factor_clean = factor.lower() if factor else ""
 
-    # Find main product from main_products
-    for product in main_products:
-        title = product.get('title', '').lower()
-        if model_number.lower() in title:
-            if product_category and not check_title_category_match(title, product_category):
-                continue
-            main_product = product
-            main_product['url'] = f"https://www.amazon.in{product.get('url')}"
-            break
+    # Priority 1: Try Google search first for main product
+    print(f"Searching with Google for main product: {brand_name} {model_number}")
+    main_product = await search_google_for_amazon_product(brand_name, model_number, product_category, factor)
+    
+    # Priority 2: If Google fails, try Amazon search results
+    if main_product is None:
+        print(f"Google search failed. Searching Amazon results for: {brand_name} {model_number}")
+        for product in main_products:
+            title = product.get('title', '').lower()
+            if model_number.lower() in title:
+                if product_category and not check_title_category_match(title, product_category):
+                    continue
+                main_product = product
+                main_product['url'] = f"https://www.amazon.in{product.get('url')}"
+                # Normalize price format for consistency
+                if main_product.get('price'):
+                    main_product['price'] = normalize_price_format(main_product['price'])
+                break
+    
+    # Priority 3: If both Google and Amazon fail, use Perplexity as final fallback
+    if main_product is None:
+        print(f"Amazon search also failed. Searching with Perplexity for: {brand_name} {model_number}")
+        main_product = search_product_with_perplexity(brand_name, model_number, product_category, factor)
 
     # If we found a main product, use its title for type matching
     main_product_title = main_product.get('title', '') if main_product else None
@@ -223,15 +325,13 @@ def classify_products(main_products, competitor_products, model_number, brand_na
             continue
 
         product['url'] = f"https://www.amazon.in{product.get('url')}"
+        # Normalize price format for consistency
+        if product.get('price'):
+            product['price'] = normalize_price_format(product['price'])
         competitors.append(product)
 
         if len(competitors) == 5:
             break
-
-    # Fallback: If main product was not found, search using Perplexity
-    if main_product is None:
-        print(f"Main product not found in search results. Searching with Perplexity for: {brand_name} {model_number}")
-        main_product = search_product_with_perplexity(brand_name, model_number, product_category, factor)
 
     return main_product, competitors
 
@@ -275,6 +375,204 @@ def check_product_type_match(title: str, main_product_title: str) -> bool:
     except Exception as e:
         print(f"Error during Gemini type matching: {e}")
         return False
+
+async def search_google_for_amazon_product(brand_name, model_number, product_category, factor):
+    """
+    Search Google for Amazon results and extract product information from search snippets.
+    Returns product information in the same format as the scraper.
+    """
+    import re
+    
+    try:
+        # Construct Google search URL with better query
+        search_query = f"{model_number}"
+        google_search_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+        
+        # Use the same proxy configuration as Amazon scraping
+        proxy_config_evomi = ProxyConfig(
+            server="http://core-residential.evomi.com:1000",
+            username="kanishkcha5",
+            password="vdYFqTHTs8nCeYHqLEKY",
+        )
+        
+        session_id = generate_session_id()
+        rotate_session(Evomi_api_key, session_id, "rpc")
+        
+        browser_config = BrowserConfig(
+            proxy_config=proxy_config_evomi,
+        )
+        
+        # Create extraction strategy for Google search results
+        google_extraction_config = CrawlerRunConfig(
+            extraction_strategy=JsonCssExtractionStrategy(
+                schema={
+                    "name": "Google search results",
+                    "baseSelector": "div.srKDX",
+                    "fields": [
+                        {"name": "title", "selector": "h3", "type": "text"},
+                        {"name": "url", "selector": "a", "type": "attribute", "attribute": "href"},
+                        {"name": "snippet", "selector": "div.VwiC3b", "type": "text"},
+                        {"name": "price", "selector": "span.LI0TWe, span.wHYlTd", "type": "text"},
+                        {"name": "rating", "selector": "span.yi40Hd.YrbPuc, span.yi40Hd, span.YrbPuc", "type": "text"},
+                        {"name": "review_count", "selector": "span.RDApEe.YrbPuc, span.RDApEe", "type": "text"}
+                    ]
+                }
+            )
+        )
+        
+        print(f"Searching Google for: {google_search_url}")
+        
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            result = await crawler.arun(url=google_search_url, config=google_extraction_config, cache_mode=CacheMode.BYPASS)
+            
+            if not result:
+                print("No result object from Google search")
+                return None
+            
+            # Check if Google is blocking requests
+            if hasattr(result, 'html') and result.html:
+                if "unusual traffic" in result.html.lower() or "captcha" in result.html.lower():
+                    print("WARNING: Google may be blocking requests due to unusual traffic")
+            
+            if not result.extracted_content:
+                print("No extracted content from Google search")
+                print(f"Result status: {getattr(result, 'status', 'Unknown')}")
+                return None
+                
+            try:
+                search_results = json.loads(result.extracted_content)
+                print(f"Found {len(search_results)} Google search results")
+                
+                # Debug: Print first few results to see structure
+                for i, result_item in enumerate(search_results[:3]):
+                    print(f"Result {i+1}: {result_item}")
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON: {e}")
+                print(f"Raw content: {result.extracted_content[:500]}...")  # Show first 500 chars
+                return None
+            
+            # If no results with current selector, try alternative approach
+            if len(search_results) == 0:
+                print("Trying alternative selectors...")
+                alternative_config = CrawlerRunConfig(
+                    extraction_strategy=JsonCssExtractionStrategy(
+                        schema={
+                            "name": "Google search results alternative",
+                            "baseSelector": "div.g, div.tF2Cxc, div.srKDX, div.MjjYud, div.jC6vSe",
+                            "fields": [
+                                {"name": "title", "selector": "h3", "type": "text"},
+                                {"name": "url", "selector": "a", "type": "attribute", "attribute": "href"},
+                                {"name": "snippet", "selector": "div.VwiC3b, .IsZvec, span", "type": "text"},
+                                {"name": "price", "selector": "span.LI0TWe, span.wHYlTd", "type": "text"},
+                                {"name": "rating", "selector": "span.yi40Hd.YrbPuc, span.yi40Hd, span.YrbPuc, span[class*='rating']", "type": "text"},
+                                {"name": "review_count", "selector": "span.RDApEe.YrbPuc, span.RDApEe, span[class*='review']", "type": "text"}
+                            ]
+                        }
+                    )
+                )
+                result = await crawler.arun(url=google_search_url, config=alternative_config, cache_mode=CacheMode.BYPASS)
+                if result and result.extracted_content:
+                    search_results = json.loads(result.extracted_content)
+                    print(f"Alternative extraction found {len(search_results)} results")
+            
+            # First, collect all results and look for price information
+            amazon_result = None
+            best_price = ""
+            
+            for result in search_results:
+                url = result.get('url', '')
+                title = result.get('title', '')
+                
+                # Check if this is an Amazon result
+                if ('amazon.in' in url or 'amazon.com' in url) and (model_number.upper() in title.upper() or model_number.upper() in url.upper()):
+                    print(f"Found Amazon result: {title}")
+                    amazon_result = result
+                    
+                    # Extract price, rating, and reviews from the result
+                    price = result.get('price', '').strip()
+                    rating = result.get('rating', '').strip()
+                    review_count = result.get('review_count', '').strip()
+                    
+                    # If price not found in dedicated field, try multiple fallback methods
+                    if not price:
+                        # First try extracting from snippet
+                        snippet = result.get('snippet', '')
+                        price = extract_price_from_snippet(snippet)
+                        
+                        # If still no price, try extracting from raw HTML (if available)
+                        if not price and hasattr(result, 'raw_html') and result.raw_html:
+                            price = extract_price_from_html(result.raw_html)
+                    
+                    best_price = price
+                    break
+            
+            # If we found an Amazon result but no price, look for price in other results for the same model
+            if amazon_result and not best_price:
+                print("Looking for price in other results for the same model...")
+                for i, result in enumerate(search_results):
+                    title = result.get('title', '')
+                    price = result.get('price', '').strip()
+                    snippet = result.get('snippet', '')
+                    
+                    if model_number.upper() in title.upper() and price:
+                        best_price = price
+                        break
+                    elif model_number.upper() in title.upper() and not price:
+                        # Try extracting from snippet for this result too
+                        snippet_price = extract_price_from_snippet(snippet)
+                        if snippet_price:
+                            best_price = snippet_price
+                            break
+                    
+                    # Also check if snippet contains model number and has price info
+                    elif model_number.upper() in snippet.upper():
+                        snippet_price = extract_price_from_snippet(snippet)
+                        if snippet_price:
+                            best_price = snippet_price
+                            break
+            
+            if amazon_result:
+                # Use the Amazon result but with the best price found
+                price = best_price
+                rating = amazon_result.get('rating', '').strip()
+                review_count = amazon_result.get('review_count', '').strip()
+                
+                print(f"Raw extracted data: Price='{price}', Rating='{rating}', Reviews='{review_count}'")
+                
+
+                
+                # Clean up review count (remove parentheses)
+                if review_count:
+                    review_count = review_count.replace('(', '').replace(')', '')
+                
+                # Format rating properly
+                if rating:
+                    try:
+                        # Handle comma decimal separator (European format)
+                        rating_clean = rating.replace(',', '.')
+                        rating_value = float(rating_clean)
+                        rating = f"{rating_value} out of 5 stars"
+                    except ValueError:
+                        rating = ""
+                
+                # Create product data
+                product_data = {
+                    "title": amazon_result.get('title', ''),
+                    "price": normalize_price_format(price),
+                    "rating": rating,
+                    "reviews_count": review_count,
+                    "url": amazon_result.get('url', '')
+                }
+                
+                print(f"Extracted from Google: Price={price}, Rating={rating}, Reviews={review_count}")
+                return product_data
+            
+            print("No Amazon results found in Google search")
+            return None
+            
+    except Exception as e:
+        print(f"Error during Google search: {e}")
+        return None
 
 def search_product_with_perplexity(brand_name, model_number, product_category, factor):
     """
@@ -385,7 +683,7 @@ def search_product_with_perplexity(brand_name, model_number, product_category, f
                 # Construct the complete product data with title and URL
                 complete_product_data = {
                     "title": f"{brand_name} {model_number}",
-                    "price": product_data.get('price') or "",
+                    "price": normalize_price_format(product_data.get('price') or ""),
                     "rating": normalize_rating_format(product_data.get('rating') or ""),
                     "reviews_count": product_data.get('reviews_count') or "",
                     "url": ""  # Keep URL blank as requested
@@ -473,3 +771,55 @@ def normalize_rating_format(rating):
     
     # If no pattern matches and it's not a number, return blank
     return ""
+
+def normalize_price_format(price):
+    """
+    Normalize price format to ₹xx,xxx format for consistency.
+    Handles various input formats like '6499,00 INR', '₹11,990', 'Rs. 23,490', etc.
+    """
+    if not price:
+        return ""
+    
+    price = str(price).strip()
+    
+    # Remove common currency indicators and clean up
+    price = price.replace('INR', '').replace('Rs.', '').replace('Rs', '').strip()
+    
+    # Extract numbers and decimal/comma separators
+    # Handle European format (6499,00) and Indian format (6,499.00)
+    import re
+    
+    # Find all numbers, commas, and dots
+    numbers = re.findall(r'[\d,\.]+', price)
+    
+    if not numbers:
+        return price  # Return as-is if no numbers found
+    
+    number_part = numbers[0]
+    
+    # Handle European decimal format (6499,00 -> 6499.00)
+    if ',' in number_part and '.' not in number_part:
+        # Check if comma is likely a decimal separator (2 digits after comma)
+        parts = number_part.split(',')
+        if len(parts) == 2 and len(parts[1]) == 2:
+            # This is likely a decimal separator
+            number_part = parts[0] + '.' + parts[1]
+    
+    # Convert to float and back to remove unnecessary decimals
+    try:
+        price_value = float(number_part.replace(',', ''))
+        
+        # Format with Indian number system (lakhs, crores)
+        if price_value >= 10000000:  # 1 crore
+            formatted = f"₹{price_value:,.0f}"
+        elif price_value >= 100000:  # 1 lakh
+            formatted = f"₹{price_value:,.0f}"
+        else:
+            formatted = f"₹{price_value:,.0f}"
+        
+        return formatted
+    except ValueError:
+        # If conversion fails, try to add ₹ symbol if not present
+        if not price.startswith('₹'):
+            return f"₹{price}"
+        return price

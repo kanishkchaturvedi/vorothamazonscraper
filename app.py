@@ -31,14 +31,16 @@ async def search(
         main_products, competitor_products = await run_sync(lambda: asyncio.run(
             extract_amazon_products(product_category, model_number, brand, factor)
         ))
-        main_product, competitors = classify_products(
-            main_products=main_products,
-            competitor_products=competitor_products,
-            model_number=model_number,
-            brand_name=brand,
-            product_category=product_category,
-            factor=factor
-        )
+        main_product, competitors = await run_sync(lambda: asyncio.run(
+            classify_products(
+                main_products=main_products,
+                competitor_products=competitor_products,
+                model_number=model_number,
+                brand_name=brand,
+                product_category=product_category,
+                factor=factor
+            )
+        ))
         background_tasks.add_task(restart_server)
 
         return {
@@ -98,14 +100,16 @@ async def search_product_on_amazon(
             extract_amazon_products(product_category, model_number, brand, factor)
         ))
 
-        main_product, competitors = classify_products(
-            main_products=main_products,
-            competitor_products=competitor_products,
-            model_number=model_number,
-            brand_name=brand,
-            product_category=product_category,
-            factor=factor
-        )
+        main_product, competitors = await run_sync(lambda: asyncio.run(
+            classify_products(
+                main_products=main_products,
+                competitor_products=competitor_products,
+                model_number=model_number,
+                brand_name=brand,
+                product_category=product_category,
+                factor=factor
+            )
+        ))
 
         # Add the restart task to the background, so it happens after the response is sent
         background_tasks.add_task(restart_server)

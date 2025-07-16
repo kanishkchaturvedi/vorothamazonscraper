@@ -29,34 +29,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN groupadd -r appuser && useradd -r -g appuser -m appuser
+
+# Create necessary directories and set permissions
+RUN mkdir -p /app/logs /app/crawl4ai_db /home/appuser/.crawl4ai /home/appuser/.local /home/appuser/.cache && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /home/appuser && \
+    chmod -R 755 /home/appuser
 
 # Install Playwright via pip (required for Docker environments)
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir playwright
 
-# Install Playwright dependencies + browser
+# Install Playwright dependencies + browser (as root for system-wide install)
 RUN playwright install --with-deps chromium
 
 # Copy project files
 COPY requirements.txt .
 COPY amazon_scraper.py .
 COPY app.py .
+COPY health_check.py .
 
 # Install other Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create necessary directories and set permissions
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+# Ensure all app files are owned by appuser
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
+
+# Run health check to verify permissions and paths
+RUN python3 health_check.py
 
 # Environment variables documentation (these should be set when running the container)
 ENV EVOMI_API_KEY=""
 ENV GEMINI_API_KEY=""
 ENV SERP_API_KEY=""
 ENV PERPLEXITY_API_KEY=""
+
+# Set Crawl4AI database path to a writable location
+ENV CRAWL4AI_DB_PATH="/app/crawl4ai_db"
+ENV HOME="/home/appuser"
+ENV PYTHONPATH="/app"
+ENV USER="appuser"
 
 # Expose FastAPI port
 EXPOSE 8000

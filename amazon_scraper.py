@@ -279,29 +279,94 @@ async def classify_products(main_products, competitor_products, model_number, br
     unit = FACTOR_LABELS.get(product_category, "")
     factor_clean = factor.lower() if factor else ""
 
-    # Priority 1: Try Google search first for main product
-    print(f"Searching with Google for main product: {brand_name} {model_number}")
-    main_product = await search_google_for_amazon_product(brand_name, model_number, product_category, factor)
+    # Initialize main product data structure
+    main_product_data = {
+        "title": "",
+        "price": "",
+        "rating": "",
+        "reviews_count": "",
+        "url": ""
+    }
+
+    # Step 1: Try Google search (SERP API) first
+    print(f"Step 1: Searching with Google for main product: {brand_name} {model_number}")
+    google_result = await search_google_for_amazon_product(brand_name, model_number, product_category, factor)
     
-    # Priority 2: If Google fails, try Amazon search results
-    if main_product is None:
-        print(f"Google search failed. Searching Amazon results for: {brand_name} {model_number}")
+    if google_result:
+        # Update main_product_data with any data found from Google
+        if google_result.get('title'):
+            main_product_data['title'] = google_result['title']
+        if google_result.get('price'):
+            main_product_data['price'] = google_result['price']
+        if google_result.get('rating'):
+            main_product_data['rating'] = google_result['rating']
+        if google_result.get('reviews_count'):
+            main_product_data['reviews_count'] = google_result['reviews_count']
+        if google_result.get('url'):
+            main_product_data['url'] = google_result['url']
+        
+        print(f"Google results - Price: {main_product_data['price']}, Rating: {main_product_data['rating']}, Reviews: {main_product_data['reviews_count']}")
+    
+    # Check if we have all three fields
+    has_all_data = all([main_product_data['price'], main_product_data['rating'], main_product_data['reviews_count']])
+    if has_all_data:
+        print("All data found from Google search. Skipping further steps.")
+        main_product = main_product_data
+    else:
+        # Step 2: Try Amazon search results for missing fields
+        print(f"Step 2: Searching Amazon results for missing fields: {brand_name} {model_number}")
         for product in main_products:
             title = product.get('title', '').lower()
             if model_number.lower() in title:
                 if product_category and not check_title_category_match(title, product_category):
                     continue
-                main_product = product
-                main_product['url'] = f"https://www.amazon.in{product.get('url')}"
-                # Normalize price format for consistency
-                if main_product.get('price'):
-                    main_product['price'] = normalize_price_format(main_product['price'])
+                
+                # Update missing fields from Amazon results
+                if not main_product_data['title'] and product.get('title'):
+                    main_product_data['title'] = product.get('title')
+                if not main_product_data['price'] and product.get('price'):
+                    main_product_data['price'] = normalize_price_format(product.get('price'))
+                if not main_product_data['rating'] and product.get('rating'):
+                    main_product_data['rating'] = product.get('rating')
+                if not main_product_data['reviews_count'] and product.get('reviews_count'):
+                    main_product_data['reviews_count'] = product.get('reviews_count')
+                if not main_product_data['url'] and product.get('url'):
+                    main_product_data['url'] = f"https://www.amazon.in{product.get('url')}"
+                
+                print(f"Amazon results - Price: {main_product_data['price']}, Rating: {main_product_data['rating']}, Reviews: {main_product_data['reviews_count']}")
                 break
-    
-    # Priority 3: If both Google and Amazon fail, use Perplexity as final fallback
-    if main_product is None:
-        print(f"Amazon search also failed. Searching with Perplexity for: {brand_name} {model_number}")
-        main_product = search_product_with_perplexity(brand_name, model_number, product_category, factor)
+        
+        # Check if we have all three fields now
+        has_all_data = all([main_product_data['price'], main_product_data['rating'], main_product_data['reviews_count']])
+        if has_all_data:
+            print("All data found from Amazon search. Skipping Perplexity.")
+            main_product = main_product_data
+        else:
+            # Step 3: Try Perplexity for any remaining missing fields
+            print(f"Step 3: Searching with Perplexity for remaining missing fields: {brand_name} {model_number}")
+            perplexity_result = search_product_with_perplexity(brand_name, model_number, product_category, factor)
+            
+            if perplexity_result:
+                # Update only missing fields from Perplexity
+                if not main_product_data['title'] and perplexity_result.get('title'):
+                    main_product_data['title'] = perplexity_result['title']
+                if not main_product_data['price'] and perplexity_result.get('price'):
+                    main_product_data['price'] = perplexity_result['price']
+                if not main_product_data['rating'] and perplexity_result.get('rating'):
+                    main_product_data['rating'] = perplexity_result['rating']
+                if not main_product_data['reviews_count'] and perplexity_result.get('reviews_count'):
+                    main_product_data['reviews_count'] = perplexity_result['reviews_count']
+                if not main_product_data['url'] and perplexity_result.get('url'):
+                    main_product_data['url'] = perplexity_result['url']
+                
+                print(f"Perplexity results - Price: {main_product_data['price']}, Rating: {main_product_data['rating']}, Reviews: {main_product_data['reviews_count']}")
+            
+            # Final check - if we have at least title and URL, use the data
+            if main_product_data['title'] or main_product_data['url']:
+                main_product = main_product_data
+            else:
+                print("No product data found from any source")
+                main_product = None
 
     # If we found a main product, use its title for type matching
     main_product_title = main_product.get('title', '') if main_product else None
@@ -531,15 +596,21 @@ async def search_google_for_amazon_product_crawl4ai(brand_name, model_number, pr
                             best_price = snippet_price
                             break
             
+            # Create product data even if we don't have all fields
+            product_data = {
+                "title": amazon_result.get('title', '') if amazon_result else '',
+                "price": normalize_price_format(best_price),
+                "rating": "",
+                "reviews_count": "",
+                "url": amazon_result.get('url', '') if amazon_result else ''
+            }
+            
             if amazon_result:
-                # Use the Amazon result but with the best price found
-                price = best_price
+                # Extract rating and reviews from the Amazon result
                 rating = amazon_result.get('rating', '').strip()
                 review_count = amazon_result.get('review_count', '').strip()
                 
-                print(f"Raw extracted data: Price='{price}', Rating='{rating}', Reviews='{review_count}'")
-                
-
+                print(f"Raw extracted data: Price='{best_price}', Rating='{rating}', Reviews='{review_count}'")
                 
                 # Clean up review count (remove parentheses)
                 if review_count:
@@ -555,16 +626,13 @@ async def search_google_for_amazon_product_crawl4ai(brand_name, model_number, pr
                     except ValueError:
                         rating = ""
                 
-                # Create product data
-                product_data = {
-                    "title": amazon_result.get('title', ''),
-                    "price": normalize_price_format(price),
-                    "rating": rating,
-                    "reviews_count": review_count,
-                    "url": amazon_result.get('url', '')
-                }
-                
-                print(f"Extracted from Google: Price={price}, Rating={rating}, Reviews={review_count}")
+                product_data['rating'] = rating
+                product_data['reviews_count'] = review_count
+            
+            print(f"Extracted from Google: Price={product_data['price']}, Rating={product_data['rating']}, Reviews={product_data['reviews_count']}")
+            
+            # Return the product data if we have at least a title or URL (indicating we found the product)
+            if product_data['title'] or product_data['url']:
                 return product_data
             
             print("No Amazon results found in Google search")
@@ -890,56 +958,54 @@ async def search_google_for_amazon_product(brand_name, model_number, product_cat
             except Exception as e:
                 print(f"Error getting price from Perplexity: {e}")
         
-        if amazon_result:
-            # Use the extracted rating and reviews, fallback to snippet extraction if needed
-            rating = best_rating
-            review_count = best_reviews
-            
-            # If we didn't get rating/reviews from rich snippet, try extracting from snippet
-            if not rating or not review_count:
-                snippet = amazon_result.get('snippet', '')
-                if snippet:
-                    # Look for rating patterns like "4.4 out of 5 stars" or "4.4/5"
-                    if not rating:
-                        rating_patterns = [
-                            r'(\d+\.?\d*)\s*out of\s*5\s*stars',
-                            r'(\d+\.?\d*)/5',
-                            r'(\d+\.?\d*)\s*stars',
-                            r'Rating:\s*(\d+\.?\d*)',
-                            r'(\d+\.?\d*)\s*★'
-                        ]
-                        
-                        for pattern in rating_patterns:
-                            match = re.search(pattern, snippet, re.IGNORECASE)
-                            if match:
-                                rating_value = float(match.group(1))
-                                rating = f"{rating_value} out of 5 stars"
-                                break
+        # Create product data even if we don't have all fields
+        product_data = {
+            "title": amazon_result.get('title', '') if amazon_result else '',
+            "price": normalize_price_format(best_price),
+            "rating": best_rating,
+            "reviews_count": best_reviews,
+            "url": amazon_result.get('link', '') if amazon_result else ''
+        }
+        
+        # If we have an Amazon result but missing rating/reviews, try extracting from snippet
+        if amazon_result and (not best_rating or not best_reviews):
+            snippet = amazon_result.get('snippet', '')
+            if snippet:
+                # Look for rating patterns like "4.4 out of 5 stars" or "4.4/5"
+                if not best_rating:
+                    rating_patterns = [
+                        r'(\d+\.?\d*)\s*out of\s*5\s*stars',
+                        r'(\d+\.?\d*)/5',
+                        r'(\d+\.?\d*)\s*stars',
+                        r'Rating:\s*(\d+\.?\d*)',
+                        r'(\d+\.?\d*)\s*★'
+                    ]
                     
-                    # Look for review count patterns
-                    if not review_count:
-                        review_patterns = [
-                            r'\((\d+(?:,\d+)*)\)\s*reviews?',
-                            r'(\d+(?:,\d+)*)\s*reviews?',
-                            r'(\d+(?:,\d+)*)\s*customer reviews?'
-                        ]
-                        
-                        for pattern in review_patterns:
-                            match = re.search(pattern, snippet, re.IGNORECASE)
-                            if match:
-                                review_count = match.group(1)
-                                break
-            
-            # Create product data
-            product_data = {
-                "title": amazon_result.get('title', ''),
-                "price": normalize_price_format(best_price),
-                "rating": rating,
-                "reviews_count": review_count,
-                "url": amazon_result.get('link', '')
-            }
-            
-            print(f"Extracted from Serp API: Price={best_price}, Rating={rating}, Reviews={review_count}")
+                    for pattern in rating_patterns:
+                        match = re.search(pattern, snippet, re.IGNORECASE)
+                        if match:
+                            rating_value = float(match.group(1))
+                            product_data['rating'] = f"{rating_value} out of 5 stars"
+                            break
+                
+                # Look for review count patterns
+                if not best_reviews:
+                    review_patterns = [
+                        r'\((\d+(?:,\d+)*)\)\s*reviews?',
+                        r'(\d+(?:,\d+)*)\s*reviews?',
+                        r'(\d+(?:,\d+)*)\s*customer reviews?'
+                    ]
+                    
+                    for pattern in review_patterns:
+                        match = re.search(pattern, snippet, re.IGNORECASE)
+                        if match:
+                            product_data['reviews_count'] = match.group(1)
+                            break
+        
+        print(f"Extracted from Serp API: Price={product_data['price']}, Rating={product_data['rating']}, Reviews={product_data['reviews_count']}")
+        
+        # Return the product data if we have at least a title or URL (indicating we found the product)
+        if product_data['title'] or product_data['url']:
             return product_data
         
         print("No Amazon results found in Serp API search")
@@ -1070,7 +1136,7 @@ def search_product_with_perplexity(brand_name, model_number, product_category, f
                     if complete_product_data[key] == "null":
                         complete_product_data[key] = ""
                 
-                # Check if we got any meaningful data (not all null/empty)
+                # Return the product data if we have any meaningful data (not all null/empty)
                 has_data = any(product_data.get(field) and product_data.get(field) != "null" for field in ['price', 'rating', 'reviews_count'])
                 
                 if has_data:

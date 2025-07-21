@@ -441,207 +441,6 @@ def check_product_type_match(title: str, main_product_title: str) -> bool:
         print(f"Error during Gemini type matching: {e}")
         return False
 
-async def search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor):
-    """
-    Search Google for Amazon results and extract product information from search snippets.
-    Returns product information in the same format as the scraper.
-    """
-    import re
-    
-    try:
-        # Construct Google search URL with better query
-        search_query = f"{model_number}"
-        google_search_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
-        
-        # Use the same proxy configuration as Amazon scraping
-        proxy_config_evomi = ProxyConfig(
-            server="http://core-residential.evomi.com:1000",
-            username="kanishkcha5",
-            password="vdYFqTHTs8nCeYHqLEKY",
-        )
-        
-        session_id = generate_session_id()
-        rotate_session(Evomi_api_key, session_id, "rpc")
-        
-        browser_config = BrowserConfig(
-            proxy_config=proxy_config_evomi,
-        )
-        
-        # Create extraction strategy for Google search results
-        google_extraction_config = CrawlerRunConfig(
-            extraction_strategy=JsonCssExtractionStrategy(
-                schema={
-                    "name": "Google search results",
-                    "baseSelector": "div.srKDX",
-                    "fields": [
-                        {"name": "title", "selector": "h3", "type": "text"},
-                        {"name": "url", "selector": "a", "type": "attribute", "attribute": "href"},
-                        {"name": "snippet", "selector": "div.VwiC3b", "type": "text"},
-                        {"name": "price", "selector": "span.LI0TWe, span.wHYlTd", "type": "text"},
-                        {"name": "rating", "selector": "span.yi40Hd.YrbPuc, span.yi40Hd, span.YrbPuc", "type": "text"},
-                        {"name": "review_count", "selector": "span.RDApEe.YrbPuc, span.RDApEe", "type": "text"}
-                    ]
-                }
-            )
-        )
-        
-        print(f"Searching Google for: {google_search_url}")
-        
-        async with AsyncWebCrawler(config=browser_config) as crawler:
-            result = await crawler.arun(url=google_search_url, config=google_extraction_config, cache_mode=CacheMode.BYPASS)
-            
-            if not result:
-                print("No result object from Google search")
-                return None
-            
-            # Check if Google is blocking requests
-            if hasattr(result, 'html') and result.html:
-                if "unusual traffic" in result.html.lower() or "captcha" in result.html.lower():
-                    print("WARNING: Google may be blocking requests due to unusual traffic")
-            
-            if not result.extracted_content:
-                print("No extracted content from Google search")
-                print(f"Result status: {getattr(result, 'status', 'Unknown')}")
-                return None
-                
-            try:
-                search_results = json.loads(result.extracted_content)
-                print(f"Found {len(search_results)} Google search results")
-                
-                # Debug: Print first few results to see structure
-                for i, result_item in enumerate(search_results[:3]):
-                    print(f"Result {i+1}: {result_item}")
-            except json.JSONDecodeError as e:
-                print(f"Error parsing JSON: {e}")
-                print(f"Raw content: {result.extracted_content[:500]}...")  # Show first 500 chars
-                return None
-            
-            # If no results with current selector, try alternative approach
-            if len(search_results) == 0:
-                print("Trying alternative selectors...")
-                alternative_config = CrawlerRunConfig(
-                    extraction_strategy=JsonCssExtractionStrategy(
-                        schema={
-                            "name": "Google search results alternative",
-                            "baseSelector": "div.g, div.tF2Cxc, div.srKDX, div.MjjYud, div.jC6vSe",
-                            "fields": [
-                                {"name": "title", "selector": "h3", "type": "text"},
-                                {"name": "url", "selector": "a", "type": "attribute", "attribute": "href"},
-                                {"name": "snippet", "selector": "div.VwiC3b, .IsZvec, span", "type": "text"},
-                                {"name": "price", "selector": "span.LI0TWe, span.wHYlTd", "type": "text"},
-                                {"name": "rating", "selector": "span.yi40Hd.YrbPuc, span.yi40Hd, span.YrbPuc, span[class*='rating']", "type": "text"},
-                                {"name": "review_count", "selector": "span.RDApEe.YrbPuc, span.RDApEe, span[class*='review']", "type": "text"}
-                            ]
-                        }
-                    )
-                )
-                result = await crawler.arun(url=google_search_url, config=alternative_config, cache_mode=CacheMode.BYPASS)
-                if result and result.extracted_content:
-                    search_results = json.loads(result.extracted_content)
-                    print(f"Alternative extraction found {len(search_results)} results")
-            
-            # First, collect all results and look for price information
-            amazon_result = None
-            best_price = ""
-            
-            for result in search_results:
-                url = result.get('url', '')
-                title = result.get('title', '')
-                
-                # Check if this is an Amazon result
-                if ('amazon.in' in url or 'amazon.com' in url) and (model_number.upper() in title.upper() or model_number.upper() in url.upper()):
-                    print(f"Found Amazon result: {title}")
-                    amazon_result = result
-                    
-                    # Extract price, rating, and reviews from the result
-                    price = result.get('price', '').strip()
-                    rating = result.get('rating', '').strip()
-                    review_count = result.get('review_count', '').strip()
-                    
-                    # If price not found in dedicated field, try multiple fallback methods
-                    if not price:
-                        # First try extracting from snippet
-                        snippet = result.get('snippet', '')
-                        price = extract_price_from_snippet(snippet)
-                        
-                        # If still no price, try extracting from raw HTML (if available)
-                        if not price and hasattr(result, 'raw_html') and result.raw_html:
-                            price = extract_price_from_html(result.raw_html)
-                    
-                    best_price = price
-                    break
-            
-            # If we found an Amazon result but no price, look for price in other results for the same model
-            if amazon_result and not best_price:
-                print("Looking for price in other results for the same model...")
-                for i, result in enumerate(search_results):
-                    title = result.get('title', '')
-                    price = result.get('price', '').strip()
-                    snippet = result.get('snippet', '')
-                    
-                    if model_number.upper() in title.upper() and price:
-                        best_price = price
-                        break
-                    elif model_number.upper() in title.upper() and not price:
-                        # Try extracting from snippet for this result too
-                        snippet_price = extract_price_from_snippet(snippet)
-                        if snippet_price:
-                            best_price = snippet_price
-                            break
-                    
-                    # Also check if snippet contains model number and has price info
-                    elif model_number.upper() in snippet.upper():
-                        snippet_price = extract_price_from_snippet(snippet)
-                        if snippet_price:
-                            best_price = snippet_price
-                            break
-            
-            # Create product data even if we don't have all fields
-            product_data = {
-                "title": amazon_result.get('title', '') if amazon_result else '',
-                "price": normalize_price_format(best_price),
-                "rating": "",
-                "reviews_count": "",
-                "url": amazon_result.get('url', '') if amazon_result else ''
-            }
-            
-            if amazon_result:
-                # Extract rating and reviews from the Amazon result
-                rating = amazon_result.get('rating', '').strip()
-                review_count = amazon_result.get('review_count', '').strip()
-                
-                print(f"Raw extracted data: Price='{best_price}', Rating='{rating}', Reviews='{review_count}'")
-                
-                # Clean up review count (remove parentheses)
-                if review_count:
-                    review_count = review_count.replace('(', '').replace(')', '')
-                
-                # Format rating properly
-                if rating:
-                    try:
-                        # Handle comma decimal separator (European format)
-                        rating_clean = rating.replace(',', '.')
-                        rating_value = float(rating_clean)
-                        rating = f"{rating_value} out of 5 stars"
-                    except ValueError:
-                        rating = ""
-                
-                product_data['rating'] = rating
-                product_data['reviews_count'] = review_count
-            
-            print(f"Extracted from Google: Price={product_data['price']}, Rating={product_data['rating']}, Reviews={product_data['reviews_count']}")
-            
-            # Return the product data if we have at least a title or URL (indicating we found the product)
-            if product_data['title'] or product_data['url']:
-                return product_data
-            
-            print("No Amazon results found in Google search")
-            return None
-            
-    except Exception as e:
-        print(f"Error during Google search: {e}")
-        return None
-
 async def search_google_for_amazon_product(brand_name, model_number, product_category, factor):
     """
     Search Google using Serp API for Amazon results and extract product information.
@@ -654,8 +453,8 @@ async def search_google_for_amazon_product(brand_name, model_number, product_cat
         # Check if Serp API key is set
         serp_api_key = os.getenv('SERP_API_KEY')
         if not serp_api_key:
-            print("Warning: SERP_API_KEY environment variable not set, falling back to Crawl4AI")
-            return await search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor)
+            print("Warning: SERP_API_KEY environment variable not set, cannot perform Google search.")
+            return None
         
         # Construct search query
         search_query = f"{brand_name} {model_number}"
@@ -1013,8 +812,7 @@ async def search_google_for_amazon_product(brand_name, model_number, product_cat
         
     except Exception as e:
         print(f"Error during Serp API search: {e}")
-        # Fallback to Crawl4AI if Serp API fails
-        return await search_google_for_amazon_product_crawl4ai(brand_name, model_number, product_category, factor)
+        return None
 
 def search_product_with_perplexity(brand_name, model_number, product_category, factor):
     """

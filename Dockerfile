@@ -65,6 +65,9 @@ RUN playwright install chromium
 # Run health check to verify permissions and paths
 RUN python3 health_check.py
 
+# Clean up root and pip cache to reduce image size
+RUN rm -rf /root/.cache && rm -rf /home/appuser/.cache/pip
+
 # Environment variables documentation (these should be set when running the container)
 ENV EVOMI_API_KEY=""
 ENV GEMINI_API_KEY=""

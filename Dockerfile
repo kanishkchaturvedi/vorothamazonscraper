@@ -42,7 +42,7 @@ RUN pip install --upgrade pip \
     && pip install --no-cache-dir playwright
 
 # Install Playwright dependencies + browser (as root for system-wide install)
-RUN playwright install --with-deps chromium
+RUN playwright install --with-deps
 
 # Copy project files
 COPY requirements.txt .
@@ -58,6 +58,9 @@ RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
+
+# 🛠️ Install browser as non-root (so it's in appuser's cache)
+RUN playwright install chromium
 
 # Run health check to verify permissions and paths
 RUN python3 health_check.py

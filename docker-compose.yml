@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  amazon-scraper:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - EVOMI_API_KEY=${EVOMI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SERP_API_KEY=${SERP_API_KEY}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      - CRAWL4AI_DB_PATH=/app/crawl4ai_db
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G 

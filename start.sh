@@ -13,7 +13,7 @@ apt-get update && apt-get install -y \
   libgbm1 \
   libasound2
 
-# Install Playwright browser binaries
+# Install Playwright browser binarie
 python -m playwright install chromium
 
 # Start your app

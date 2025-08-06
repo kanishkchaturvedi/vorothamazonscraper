@@ -52,6 +52,9 @@ WORKDIR /app
 COPY --from=build /app /app
 COPY --from=build /root/.cache/ms-playwright /root/.cache/ms-playwright
 
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Install ONLY required shared libraries (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \

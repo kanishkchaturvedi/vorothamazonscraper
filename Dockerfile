@@ -53,6 +53,9 @@ COPY health_check.py .
 # Install other Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN rm -rf /root/.cache /root/.npm /tmp/*
+
+
 # Ensure all app files are owned by appuser
 RUN chown -R appuser:appuser /app
 
@@ -66,7 +69,7 @@ RUN playwright install chromium
 RUN python3 health_check.py
 
 # Clean up root and pip cache to reduce image size
-RUN rm -rf /root/.cache && rm -rf /home/appuser/.cache/pip
+RUN rm -rf ~/.cache ~/.npm /tmp/*
 
 # Environment variables documentation (these should be set when running the container)
 ENV EVOMI_API_KEY=""

@@ -76,6 +76,9 @@ RUN groupadd -r appuser && useradd -r -g appuser -m appuser && \
 
 USER appuser
 
+# Install Playwright browser as non-root user (so it's in the right cache location)
+RUN playwright install chromium
+
 # Env vars
 ENV CRAWL4AI_DB_PATH="/app/crawl4ai_db"
 ENV HOME="/home/appuser"

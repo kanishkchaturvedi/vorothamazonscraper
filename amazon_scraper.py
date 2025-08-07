@@ -219,7 +219,7 @@ async def extract_amazon_products(product_category, model_number, brand, factor)
                 "fields": [
                     {"name": "title", "selector": "h2 span", "type": "text"},
                     {"name": "reviews_count", "selector": ".a-size-base", "type": "text"},
-                    {"name": "rating", "selector": ".a-icon-star-small .a-icon-alt", "type": "text"},
+                    {"name": "rating", "selector": ".a-icon.a-icon-star-mini .a-icon-alt", "type": "text"},
                     {"name": "price", "selector": ".a-price .a-offscreen", "type": "text"},
                     {"name": "url", "selector": ".a-link-normal", "type": "attribute", "attribute": "href"}
                 ]
@@ -229,14 +229,37 @@ async def extract_amazon_products(product_category, model_number, brand, factor)
 
     try:
         print(f"Starting extraction for: {brand} {factor} {product_category} {model_number}")
+        print(f"Main URL: {main_url}")
+        print(f"Competitor URL: {competitor_url}")
+        
         async with AsyncWebCrawler(config=browswer_config) as crawler:
             # Get main product results
+            print("Extracting main products...")
             main_result = await crawler.arun(url=main_url, config=crawler_config, cache_mode=CacheMode.BYPASS)
             main_products = json.loads(main_result.extracted_content) if main_result and main_result.extracted_content else []
+            
+            print(f"Main products extracted: {len(main_products)}")
+            for i, product in enumerate(main_products[:3]):  # Show first 3
+                print(f"Main product {i+1}:")
+                print(f"  Title: {product.get('title', 'N/A')}")
+                print(f"  Price: {product.get('price', 'N/A')}")
+                print(f"  Rating: {product.get('rating', 'N/A')}")
+                print(f"  Reviews: {product.get('reviews_count', 'N/A')}")
+                print(f"  URL: {product.get('url', 'N/A')}")
 
             # Get competitor results
+            print("\nExtracting competitor products...")
             competitor_result = await crawler.arun(url=competitor_url, config=crawler_config, cache_mode=CacheMode.BYPASS)
             competitor_products = json.loads(competitor_result.extracted_content) if competitor_result and competitor_result.extracted_content else []
+            
+            print(f"Competitor products extracted: {len(competitor_products)}")
+            for i, product in enumerate(competitor_products[:5]):  # Show first 5
+                print(f"Competitor product {i+1}:")
+                print(f"  Title: {product.get('title', 'N/A')}")
+                print(f"  Price: {product.get('price', 'N/A')}")
+                print(f"  Rating: {product.get('rating', 'N/A')}")
+                print(f"  Reviews: {product.get('reviews_count', 'N/A')}")
+                print(f"  URL: {product.get('url', 'N/A')}")
 
             return main_products, competitor_products
     except Exception as e:
@@ -274,7 +297,22 @@ async def classify_products(main_products, competitor_products, model_number, br
     def title_has_factor(title: str, factor: str, unit: str) -> bool:
         title = title.lower()
         factor = str(factor).lower()
-        return factor in title or (f"{factor} {unit}".lower() in title)
+        
+        # Check for exact factor match
+        factor_match = factor in title
+        # Check for factor with unit match
+        factor_unit_match = f"{factor} {unit}".lower() in title
+        
+        print(f"    title_has_factor debug:")
+        print(f"      Title: '{title}'")
+        print(f"      Looking for: '{factor}' or '{factor} {unit}'")
+        print(f"      Factor match: {factor_match}")
+        print(f"      Factor+unit match: {factor_unit_match}")
+        
+        result = factor_match or factor_unit_match
+        print(f"      Final result: {result}")
+        
+        return result
 
     unit = FACTOR_LABELS.get(product_category, "")
     factor_clean = factor.lower() if factor else ""
@@ -372,23 +410,43 @@ async def classify_products(main_products, competitor_products, model_number, br
     main_product_title = main_product.get('title', '') if main_product else None
 
     # Find competitors from competitor_products
-    for product in competitor_products:
+    print(f"\n=== COMPETITOR DEBUG ====")
+    print(f"Total competitor products to process: {len(competitor_products)}")
+    print(f"Brand name to exclude: {brand_name}")
+    print(f"Product category: {product_category}")
+    print(f"Factor: {factor_clean}, Unit: {unit}")
+    print(f"Main product title: {main_product_title}")
+    
+    for i, product in enumerate(competitor_products):
         title = product.get('title', '').lower()
+        print(f"\n--- Checking competitor {i+1} ---")
+        print(f"Title: {title}")
+        print(f"Price: {product.get('price')}")
+        print(f"Rating: {product.get('rating')}")
+        print(f"Reviews: {product.get('reviews_count')}")
+        print(f"URL: {product.get('url')}")
 
         if brand_name.lower() in title:
+            print(f"❌ REJECTED: Contains brand name '{brand_name}'")
             continue
         if product_category and not check_title_category_match(title, product_category):
+            print(f"❌ REJECTED: Category mismatch for '{product_category}'")
             continue
         if factor and not title_has_factor(title, factor_clean, unit):
+            print(f"❌ REJECTED: Factor mismatch - looking for '{factor_clean}' with unit '{unit}'")
             continue
         # Add new check for product type matching
         if main_product_title and not check_product_type_match(title, main_product_title):
+            print(f"❌ REJECTED: Type mismatch with main product")
             continue
 
         important_fields = ['title', 'price', 'rating', 'reviews_count', 'url']
-        if any(product.get(field) is None for field in important_fields):
+        missing_fields = [field for field in important_fields if product.get(field) is None]
+        if missing_fields:
+            print(f"❌ REJECTED: Missing fields: {missing_fields}")
             continue
 
+        print(f"✅ ACCEPTED: Adding to competitors list")
         product['url'] = f"https://www.amazon.in{product.get('url')}"
         # Normalize price format for consistency
         if product.get('price'):
@@ -396,7 +454,11 @@ async def classify_products(main_products, competitor_products, model_number, br
         competitors.append(product)
 
         if len(competitors) == 5:
+            print(f"Reached maximum of 5 competitors, stopping...")
             break
+    
+    print(f"\n=== COMPETITOR DEBUG END ====")
+    print(f"Final competitors count: {len(competitors)}")
 
     return main_product, competitors
 
